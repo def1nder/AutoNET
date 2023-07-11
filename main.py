@@ -1,103 +1,132 @@
 import serial
+import paramiko
+import tkinter as tk
 import time
 
-def main(port_adress):
-    try:
-        ser = serial.Serial(
-        port=port_adress,
-        baudrate=9600,
-        stopbits=1,
-        bytesize=8,
-        parity='N',
-        timeout=None
-        )
-        ser.write(b'\r\n')
-        time.sleep(1)
-        print("Successfully connected to the switch!")
-        print("")
-        vlan_info = get_active_vlans(ser)
+class SwitchConfigTool:
+    def __init__(self):
+        self.connection = None
 
-        if vlan_info is not None:
-            vlan_count = len(vlan_info)
-            print("Switch has a total of {} active VLAN(s).".format(vlan_count))
-            print("Active VLANs and their names:")
-            for vlan in vlan_info:
-                print("VLAN {}: {}".format(vlan[0], vlan[1]))
-        else:
-            print("Aktif VLAN bilgisi alınamadı.")
+    def main(self):
+        connection_type = input("Enter 'COM' to connect via COM or 'ssh' to connect via SSH: ")
 
-        port_selection = input("Enter 'single' to select a specific port or 'range' to select a port range: ")
-        if port_selection == 'single':
-            port_num = input("Enter the port number for the interface (e.g., 0/1): ")
-            process_single_port(ser, port_num)
-        elif port_selection == 'range':
-            start_port = input("Enter the starting port number (e.g., 0/1): ")
-            end_port = input("Enter the ending port number (e.g., 24): ")
-            process_port_range(ser, start_port, end_port)
+        if connection_type == 'COM':
+            port_address = input("Enter the COM port address (e.g., COM7): ")
+            self.connect_via_serial(port_address)
+        elif connection_type == 'ssh':
+            ssh_address = input("Enter the SSH address: ")
+            ssh_username = input("Enter the SSH username: ")
+            ssh_password = input("Enter the SSH password: ")
+            self.connect_via_ssh(ssh_address, ssh_username, ssh_password)
         else:
             print("Invalid selection. Please try again.")
 
-    except serial.SerialException as e:
-        print("Connection to the switch failed: {}".format(e))
-
-    finally:
-        if 'ser' in locals() and ser.is_open:
-            ser.close()
-
-
-def process_single_port(ser, port_num):
-    with open('config.txt', 'r') as config_file:
-        sw_commands = config_file.readlines()
-        for command in sw_commands:
-            command = command.strip()
-            if 'interface FastEthernet' in command:
-                command = command.replace('FastEthernet', f'FastEthernet{port_num}')
-            print("Sending command:", command)
-            ser.write(command.encode())
-            time.sleep(0.1)
+    def connect_via_serial(self, port_address):
+        try:
+            ser = serial.Serial(
+                port=port_address,
+                baudrate=9600,
+                stopbits=1,
+                bytesize=8,
+                parity='N',
+                timeout=None
+            )
             ser.write(b'\r\n')
+            time.sleep(1)
+            print("Successfully connected to the switch via serial port!")
+            print("")
+            self.connection = ser
+            self.process_switch()
+        except serial.SerialException as e:
+            print("Connection to the switch failed: {}".format(e))
+        finally:
+            if self.connection and self.connection.is_open:
+                self.connection.close()
 
-    time.sleep(1)
-    output = ser.read_all().decode()
-    print("Switch Response:", output)
+    def connect_via_ssh(self, ssh_address, ssh_username, ssh_password):
+        try:
+            client = paramiko.SSHClient()
+            client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            client.connect(ssh_address, username=ssh_username, password=ssh_password)
 
-def process_port_range(ser, start_port, end_port):
-    with open('config.txt', 'r') as config_file:
-        sw_commands = config_file.readlines()
-        for command in sw_commands:
-            command = command.strip()
-            if 'interface FastEthernet' in command:
-                command = command.replace('FastEthernet', f'range FastEthernet{start_port}-{end_port}')
+            print("Successfully connected to the switch via SSH!")
+            print("")
+            self.connection = client
+            self.process_switch()
+        except paramiko.AuthenticationException:
+            print("Authentication failed. Please check your credentials.")
+        except paramiko.SSHException as e:
+            print("SSH connection failed: {}".format(str(e)))
+        except paramiko.ssh_exception.NoValidConnectionsError as e:
+            print("Unable to connect to the SSH server: {}".format(str(e)))
+        finally:
+            if self.connection:
+                self.connection.close()
+
+    def process_switch(self):
+        selection = input("If you want to execute your own configuration file on a switch, enter 'yes'. Otherwise, enter 'no': ")
+        if selection == 'yes':
+            self.execute_config()
+        elif selection == 'no':
+            print("Program terminated.")
+        else:
+            print("Invalid selection. Please try again.")
+
+        select = input("Do you want to write default config file as 'new.config.txt'")
+        if select == 'yes':
+            self.get_running_config()
+
+    def execute_config(self):
+        if isinstance(self.connection, serial.Serial):
+            with open('config.txt', 'r') as config_file:
+                sw_commands = config_file.readlines()
+                for command in sw_commands:
+                    command = command.strip()
+                    print("Sending command:", command)
+                    self.connection.write(command.encode())
+                    time.sleep(0.1)
+                    self.connection.write(b'\r\n')
+
+            time.sleep(1)
+            output = self.connection.read_all().decode()
+            print("Switch Response:", output)
+        elif isinstance(self.connection, paramiko.SSHClient):
+            command = f"your command here for SSH connection"
             print("Sending command:", command)
-            ser.write(command.encode())
+            stdin, stdout, stderr = self.connection.exec_command(command)
             time.sleep(0.1)
-            ser.write(b'\r\n')
+            output = stdout.read().decode()
+            print("Switch Response:", output)
+        else:
+            print("Invalid connection type.")
 
-    time.sleep(1)
-    output = ser.read_all().decode()
-    print("Switch Response:", output)
 
-def get_active_vlans(ser):
-    ser.write(b'show vlan brief\r\n')
-    time.sleep(2)
-    output = ser.read_all().decode()
-    lines = output.split('\n')
-    vlan_info = []
+    def get_running_config(self):
+        self.connection.write(b'show running-config \r\n')
+        time.sleep(10)
+        output = self.connection.read_all().decode()
+        self.write_config_to_file(output)
 
-    for line in lines:
-        line = line.strip()
-        if 'active' in line.lower():
-            vlan_parts = line.split()
-            if len(vlan_parts) >= 3:
-               vlan_id = vlan_parts[0]
-               vlan_name = vlan_parts[1]
-               vlan_info.append((vlan_id, vlan_name))
+    def write_config_to_file(self, config_output):
+        with open('new_config.txt', 'w') as file:
+            file.write(config_output)
 
-    return vlan_info
+    def send_command(self, command):
+        output = None
+
+        if isinstance(self.connection, serial.Serial):
+            self.connection.write(command.encode())
+            time.sleep(2)
+            output = self.connection.read_all().decode()
+        elif isinstance(self.connection, paramiko.SSHClient):
+            stdin, stdout, stderr = self.connection.exec_command(command)
+            time.sleep(2)
+            output = stdout.read().decode()
+        else:
+            print("Invalid connection type.")
+
+        return output
 
 if __name__ == "__main__":
-    print("\n*-*-*-* The initiation of the serial port connection *-*-*-*")
-    port_address = input("Enter the COM port address (for example - COM7): ")
-    print("Attempting to connect to the switch...")
-
-    main(port_address)
+    switch_config_tool = SwitchConfigTool()
+    switch_config_tool.main()
