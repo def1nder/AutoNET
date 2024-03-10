@@ -1,3 +1,0 @@
-vlan 10
-name vlan10_test
-end
